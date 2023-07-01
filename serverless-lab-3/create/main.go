@@ -3,12 +3,12 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"log"
+
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
-	"github.com/jackc/pgx/v4"
+
 	"github.com/google/uuid"
 	"fmt"
 	"strings"
@@ -35,25 +35,25 @@ type APIResponse struct {
 	ResponseMessage string `json:"responseMessage"`
 }
 
-type DBConfig struct {
-	Host     string
-	Port     string
-	Username string
-	Password string
-	DBName   string
-}
-
 type Request struct {
 	RequestID   string `json:"requestId"`
 	RequestTime string `json:"requestTime"`
 	Data        User   `json:"data"`
 	Signature 	string `json:"signature"`
 }
+type RequestBody struct {
+	RequestID    string `json:"requestId"`
+	RequestTime  string `json:"requestTime"`
+	Data         User   `json:"data"`
+}
 
 const SUCCESS  = "SUCCESS"
-func HandleRequest(ctx context.Context, request events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
-	var req Request
+const SERVER_ERROR = "SERVER_ERROR"
 
+func HandleRequest(ctx context.Context, request events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
+
+	// format request to json
+	var req Request
 	err := json.Unmarshal([]byte(request.Body), &req)
 
 	if err != nil {
@@ -70,6 +70,7 @@ func HandleRequest(ctx context.Context, request events.APIGatewayProxyRequest) (
 		}, nil
 	}
 
+	// verify signature
 	secretKey := "%secretKey%"
 	plainText := req.RequestID + req.Data.Phone + req.Data.Username + secretKey
 	signature := generateHMAC(secretKey, plainText )
@@ -91,6 +92,7 @@ func HandleRequest(ctx context.Context, request events.APIGatewayProxyRequest) (
 	}
 
 
+	// verify phone number
 	phone, err := strconv.Atoi(req.Data.Phone)
 	
 	if err != nil {
@@ -122,72 +124,29 @@ func HandleRequest(ctx context.Context, request events.APIGatewayProxyRequest) (
 			Body:       string(responseJSON),
 		}, nil
 	}
+
+	// create user
+	stateCreateUser := strings.Compare(createUserApiLab2(req), SUCCESS)
 	
-	dbConfig := DBConfig{
-		Host:     "postgres.cjkfitk009d7.ap-southeast-1.rds.amazonaws.com",
-		Port:     "5432",
-		Username: "postgres",
-		Password: "Xinchao123",
-		DBName:   "postgres",
-	}
-
-
-	conn, err := pgx.Connect(context.Background(), "postgres://"+dbConfig.Username+":"+dbConfig.Password+"@"+dbConfig.Host+":"+dbConfig.Port+"/"+dbConfig.DBName)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-
-	// Kiểm tra sự tồn tại duy nhất của username
-	exists, err := checkUsernameExists(conn, req.Data.Username)
-	if err != nil {
-		response := APIResponse{
-			ResponseId:      req.RequestID,
-			ResponseTime:    time.Now().String(),
-			ResponseCode:    "ERROR",
-			ResponseMessage: "Internal server error",
-		}
-		responseJSON, _ := json.Marshal(response)
-		return events.APIGatewayProxyResponse{
-			StatusCode: 500,
-			Body:       string(responseJSON),
-		}, nil
-	}
-	if exists {
-		response := APIResponse{
-			ResponseId:      req.RequestID,
-			ResponseTime:    time.Now().String(),
-			ResponseCode:    "ERROR",
-			ResponseMessage: "Username already exists",
-		}
-		responseJSON, _ := json.Marshal(response)
-		return events.APIGatewayProxyResponse{
-			StatusCode: 400,
-			Body:       string(responseJSON),
-		}, nil
-	}
-
-	// Tạo người dùng mới
-	err = createUser(conn, req.Data)
-	if err != nil {
-		response := APIResponse{
-			ResponseId:      req.RequestID,
-			ResponseTime:    time.Now().String(),
-			ResponseCode:    "ERROR",
-			ResponseMessage: "Internal server error",
-		}
-		responseJSON, _ := json.Marshal(response)
-		return events.APIGatewayProxyResponse{
-			StatusCode: 500,
-			Body:       string(responseJSON),
-		}, nil
-	}
-
 	response := APIResponse{
 		ResponseId:      req.RequestID,
 		ResponseTime:    time.Now().String(),
 		ResponseCode:    "SUCCESS",
-		ResponseMessage: "User created successfully",
+		ResponseMessage: "USER CREATED SUCCESSFULLY",
+	}
+	if stateCreateUser != 0{
+		response := APIResponse{
+			ResponseId:      req.RequestID,
+			ResponseTime:    time.Now().String(),
+			ResponseCode:    "ERROR",
+			ResponseMessage: "USER CREATION FAILED",
+		}
+		responseJSON, _ := json.Marshal(response)
+
+		return events.APIGatewayProxyResponse{
+			StatusCode: 200,
+			Body:       string(responseJSON),
+		}, nil
 	}
 	responseJSON, _ := json.Marshal(response)
 
@@ -196,6 +155,57 @@ func HandleRequest(ctx context.Context, request events.APIGatewayProxyRequest) (
 		Body:       string(responseJSON),
 	}, nil
 }
+
+func createUserApiLab2(data Request ) string{
+	// Tạo request body
+	requestBody := RequestBody{
+		RequestID:   data.RequestID,
+		RequestTime: data.RequestTime,
+		Data: data.Data,
+	}
+
+	// Chuyển đổi request body thành JSON
+	jsonBody, err := json.Marshal(requestBody)
+	if err != nil {
+		fmt.Println("FORMAT ERROR:", err)
+		return SERVER_ERROR
+	}
+
+	// Tạo HTTP request
+	url := "https://2xqobkgcwa.execute-api.us-east-1.amazonaws.com/create"
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonBody))
+	if err != nil {
+		fmt.Println("INTERNAL SERVER ERROR:", err)
+		return SERVER_ERROR 
+	}
+
+	// Set header và content type
+	req.Header.Set("x-api-key", "B5d4JtTU8u1ggV8gp7OF88gcCGxZls6T3f5PYZSa")
+	req.Header.Set("Content-Type", "application/json")
+
+	// Gửi HTTP request
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Println("REQUEST ERROR:", err)
+		return SERVER_ERROR
+	}
+	defer resp.Body.Close()
+
+	// Đọc và in ra kết quả trả về
+	var response map[string]interface{}
+	err = json.NewDecoder(resp.Body).Decode(&response)
+	if err != nil {
+		fmt.Println("FORMAT ERROR:", err)
+		return SERVER_ERROR
+	}
+
+	fmt.Println("SUCCESS:", response)
+
+	return SUCCESS
+}
+
+
 func generateHMAC(key, message string) string {
 	// Chuyển đổi khóa (key) và thông điệp (message) thành byte slices
 	keyBytes := []byte(key)
@@ -216,6 +226,7 @@ func generateHMAC(key, message string) string {
 	return hashString
 }
 
+// checkPhone function to verify phone number
 func checkPhone(phone int) string{
 	url := "https://1g1zcrwqhj.execute-api.ap-southeast-1.amazonaws.com/dev/testapi"
 	requestID := uuid.New().String()
@@ -226,15 +237,18 @@ func checkPhone(phone int) string{
 		}
 	}`,requestID, phone))
 
+	// create http request
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(requestBody))
 	if err != nil {
 		fmt.Println("INTERNAL SERVER ERROR:", err)
 		return "INTERNAL SERVER ERROR";
 	}
 
+	// set headers
 	req.Header.Set("x-api-key", "B5d4JtTU8u1ggV8gp7OF88gcCGxZls6T3f5PYZSa")
 	req.Header.Set("Content-Type", "text/plain")
 
+	// send http request
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -243,6 +257,7 @@ func checkPhone(phone int) string{
 	}
 	defer resp.Body.Close()
 
+	// read response body
 	responseBody, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		fmt.Println("HANDLE DATA ERROR:", err)
@@ -251,20 +266,6 @@ func checkPhone(phone int) string{
 
 	fmt.Println("CALL API SUCCESS:", string(responseBody))
 	return SUCCESS
-}
-
-func checkUsernameExists(conn *pgx.Conn, username string) (bool, error) {
-	var count int
-	err := conn.QueryRow(context.Background(), "SELECT COUNT(*) FROM users WHERE username = $1", username).Scan(&count)
-	if err != nil {
-		return false, err
-	}
-	return count > 0, nil
-}
-
-func createUser(conn *pgx.Conn, user User) error {
-	_, err := conn.Exec(context.Background(), "INSERT INTO users (username, name, phone) VALUES ($1, $2, $3)", user.Username, user.Name, user.Phone)
-	return err
 }
 
 func main() {
